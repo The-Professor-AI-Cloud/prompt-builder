@@ -2,6 +2,8 @@ import streamlit as st
 from openai import OpenAI
 from dotenv import load_dotenv
 import os
+import json
+from datetime import datetime
 from io import BytesIO
 from fpdf import FPDF
 import base64
@@ -13,6 +15,10 @@ client = OpenAI()
 
 # Internal model — do not expose to users
 _MODEL = "gpt-4.1"
+
+# Usage limit
+FREE_LIMIT = 10
+USAGE_FILE = "usage.json"
 
 # Page config
 st.set_page_config(
@@ -65,6 +71,20 @@ st.markdown(f"""
         white-space: pre-wrap;
         margin-bottom: 1rem;
     }}
+    .usage-bar {{
+        background-color: #f8f8f8;
+        border: 1px solid #e0e0e0;
+        border-radius: 6px;
+        padding: 0.5rem 0.75rem;
+        margin-bottom: 1rem;
+        font-size: 13px;
+        color: #555;
+    }}
+    .usage-bar.warning {{
+        background-color: #fff8e1;
+        border-color: #f9a825;
+        color: #7a5c00;
+    }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -75,9 +95,73 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ─── Mode ─────────────────────────────────────────────────────────────────────
-mode = st.radio("Mode", ["📝 Text Prompt", "🎨 Image Prompt"], horizontal=True,
-                label_visibility="collapsed")
+
+# ─── Usage tracking ───────────────────────────────────────────────────────────
+def load_usage():
+    if os.path.isfile(USAGE_FILE):
+        with open(USAGE_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_usage(data):
+    with open(USAGE_FILE, "w") as f:
+        json.dump(data, f)
+
+def _usage_key(email):
+    month = datetime.now().strftime("%Y-%m")
+    return f"{email.lower().strip()}::{month}"
+
+def get_usage_count(email):
+    return load_usage().get(_usage_key(email), 0)
+
+def increment_usage(email):
+    data = load_usage()
+    key = _usage_key(email)
+    data[key] = data.get(key, 0) + 1
+    save_usage(data)
+
+
+# ─── Email gate ───────────────────────────────────────────────────────────────
+if "user_email" not in st.session_state:
+    st.session_state.user_email = ""
+
+if not st.session_state.user_email:
+    st.markdown("### Welcome to the Prompt Builder")
+    st.markdown(
+        "Enter your email to get started. You get **10 free requests per month** — "
+        "no payment required."
+    )
+    with st.form("email_gate"):
+        email_input = st.text_input("Your email address:")
+        if st.form_submit_button("Get Started →", type="primary"):
+            val = email_input.strip()
+            if "@" in val and "." in val:
+                st.session_state.user_email = val.lower()
+                st.rerun()
+            else:
+                st.warning("Please enter a valid email address.")
+    st.stop()
+
+# ─── Usage display ────────────────────────────────────────────────────────────
+_count = get_usage_count(st.session_state.user_email)
+_remaining = max(0, FREE_LIMIT - _count)
+_warn = _remaining <= 3
+_usage_class = "usage-bar warning" if _warn else "usage-bar"
+_usage_icon = "⚠️" if _warn else "🔢"
+st.markdown(
+    f'<div class="{_usage_class}">{_usage_icon} '
+    f'<strong>{_remaining}</strong> of {FREE_LIMIT} free requests remaining this month '
+    f'&nbsp;·&nbsp; <small>{st.session_state.user_email}</small> '
+    f'<a href="?reset_email=1" style="float:right;font-size:11px;color:#aaa;">change email</a></div>',
+    unsafe_allow_html=True
+)
+
+# Allow email reset via query param
+if st.query_params.get("reset_email") == "1":
+    st.session_state.user_email = ""
+    st.query_params.clear()
+    st.rerun()
+
 
 # ─── Image tool definitions ───────────────────────────────────────────────────
 IMAGE_TOOLS = {
@@ -149,17 +233,73 @@ Write the most vivid, original, cinematically compelling prompt possible. Surpri
     },
 }
 
+# ─── Video tool definitions ───────────────────────────────────────────────────
+VIDEO_TOOLS = {
+    "Sora (OpenAI)": {
+        "description": "Cinematic prose — describe the scene and how it unfolds over time",
+        "system": """You are a Sora expert prompt writer. Sora generates video from natural language and rewards:
+- Cinematic prose written as flowing, descriptive sentences (not bullet points)
+- Temporal progression: describe what changes or happens over the duration, not just a static scene
+- Camera language woven naturally into the description: "the camera slowly drifts back to reveal...", "a tight close-up shows..."
+- Specific motion details: how subjects move, how light changes, how the environment shifts
+- Atmosphere and mood set through sensory language
+- Aim for 3–6 sentences that tell a complete visual story with a beginning, middle, and end
+
+Do NOT use technical parameter syntax. Write as if directing a short film.""",
+    },
+    "Runway Gen-3": {
+        "description": "Structured directives — camera type, action, environment, mood",
+        "system": """You are a Runway Gen-3 expert. Runway responds best to:
+- Opening with the camera setup and shot type: "Medium close-up shot:", "Wide establishing shot:"
+- Explicit camera motion cues: "slow dolly forward", "gentle pan right", "static locked-off"
+- Subject and action described in present tense, clearly separated from environment
+- Scene and environment details following the subject description
+- Lighting and time-of-day specification
+- Closing with mood and atmosphere
+
+Format each prompt as:
+[Shot type], [subject and action], [environment and setting], [camera movement], [lighting], [mood/atmosphere]
+
+Keep it concise — Runway performs best with focused, unambiguous directives.""",
+    },
+    "Kling": {
+        "description": "Motion-first descriptions — lead with action and movement",
+        "system": """You are a Kling video generation expert. Kling excels when prompts:
+- Lead immediately with the primary subject and their specific motion or action
+- Follow with environment and atmospheric detail
+- Specify camera perspective and any camera movement clearly
+- Use temporal language to describe motion quality: "gradually", "suddenly", "smoothly", "in slow motion"
+- Reference a cinematic style or film genre for visual consistency
+- Stay focused on one clear central action — competing elements reduce quality
+
+Write a single descriptive paragraph, 3–5 sentences. Prioritise motion clarity above all else.
+Avoid vague words like "beautiful" or "amazing" — be specific about what the viewer actually sees.""",
+    },
+}
+
 # ─── Session state defaults ───────────────────────────────────────────────────
 defaults = {
+    # Text prompt
     "step": 1, "goal": "", "style": "",
     "questions": [], "answers": {},
     "generated_prompt": "", "prompt_rating": "",
     "history": [], "show_history": False, "show_feedback": False,
+    # Image prompt
     "img_step": 1, "img_tool": "Midjourney",
     "img_subject": "", "img_art_style": "", "img_mood": "",
     "img_lighting": "", "img_colors": "", "img_composition": "",
     "img_extra": "", "img_negative": "",
     "img_generated": "", "img_rating": "",
+    # Video prompt
+    "vid_step": 1, "vid_tool": "Sora (OpenAI)",
+    "vid_subject": "", "vid_shot_type": "", "vid_camera_move": "",
+    "vid_duration": "10 seconds", "vid_style": "", "vid_mood": "",
+    "vid_lighting": "", "vid_extra": "",
+    "vid_generated": "", "vid_rating": "",
+    # System prompt
+    "sys_step": 1, "sys_role": "", "sys_purpose": "", "sys_tone": "",
+    "sys_rules": "", "sys_output_format": "", "sys_example": "",
+    "sys_generated": "",
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -167,9 +307,17 @@ for k, v in defaults.items():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# HELPER — call model
+# HELPER — call model (with usage tracking)
 # ══════════════════════════════════════════════════════════════════════════════
 def call_model(system: str, user: str) -> str:
+    email = st.session_state.user_email
+    current = get_usage_count(email)
+    if current >= FREE_LIMIT:
+        st.error(
+            f"You've used all {FREE_LIMIT} free requests for this month. "
+            "Check back next month, or get in touch if you'd like early access to a paid plan."
+        )
+        st.stop()
     response = client.chat.completions.create(
         model=_MODEL,
         messages=[
@@ -177,7 +325,17 @@ def call_model(system: str, user: str) -> str:
             {"role": "user", "content": user},
         ]
     )
+    increment_usage(email)
     return response.choices[0].message.content.strip()
+
+
+# ─── Mode ─────────────────────────────────────────────────────────────────────
+mode = st.radio(
+    "Mode",
+    ["📝 Text Prompt", "🎨 Image Prompt", "🎬 Video Prompt", "⚙️ System Prompt"],
+    horizontal=True,
+    label_visibility="collapsed"
+)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -302,9 +460,228 @@ Provide exactly:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# VIDEO PROMPT MODE
+# ══════════════════════════════════════════════════════════════════════════════
+elif mode == "🎬 Video Prompt":
+    st.markdown("#### 🎬 Video Prompt Builder")
+    st.caption("Generates prompts optimised for AI video generation tools.")
+
+    if st.session_state.vid_step == 1:
+        st.markdown("**Step 1 — Describe your video**")
+
+        st.session_state.vid_tool = st.selectbox("Target tool:", list(VIDEO_TOOLS.keys()))
+        vtool = VIDEO_TOOLS[st.session_state.vid_tool]
+        st.caption(f"💡 {vtool['description']}")
+
+        st.session_state.vid_subject = st.text_area(
+            "Describe the scene or action:",
+            placeholder="e.g. A lone astronaut walking across a red desert landscape, dust swirling around their boots"
+        )
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.session_state.vid_shot_type = st.selectbox("Shot type:", [
+                "Wide / establishing shot", "Medium shot", "Close-up",
+                "Extreme close-up", "POV / first person", "Aerial / drone",
+                "Over-the-shoulder", "Two-shot"
+            ])
+            st.session_state.vid_camera_move = st.selectbox("Camera movement:", [
+                "Static / locked off", "Slow pan left", "Slow pan right",
+                "Tilt up", "Tilt down", "Dolly forward", "Dolly back",
+                "Tracking shot", "Handheld / slightly shaky",
+                "Orbital / arc around subject", "Zoom in", "Zoom out"
+            ])
+            st.session_state.vid_duration = st.selectbox("Duration:", [
+                "5 seconds", "10 seconds", "15 seconds", "20 seconds"
+            ])
+        with col2:
+            st.session_state.vid_style = st.selectbox("Visual style:", [
+                "Cinematic / film", "Photorealistic", "Documentary",
+                "Slow motion", "Animated / stylised", "Time-lapse",
+                "Noir / high contrast", "Dreamy / soft focus"
+            ])
+            st.session_state.vid_mood = st.selectbox("Mood:", [
+                "Dramatic", "Serene", "Mysterious", "Tense", "Joyful",
+                "Melancholic", "Epic", "Intimate", "Ominous", "Uplifting"
+            ])
+            st.session_state.vid_lighting = st.selectbox("Lighting:", [
+                "Golden hour / magic hour", "Harsh midday sun", "Overcast / diffused",
+                "Night / low light", "Neon / artificial", "Candlelight / fire",
+                "Studio / controlled", "Backlit / silhouette"
+            ])
+            st.session_state.vid_extra = st.text_input(
+                "Extra details (optional):",
+                placeholder="e.g. Inspired by Dune, ultra-realistic, 4K"
+            )
+
+        if st.button("✨ Generate Video Prompt", type="primary") and st.session_state.vid_subject.strip():
+            user_msg = f"""Generate a high-performing {st.session_state.vid_tool} video prompt for:
+
+Scene / action: {st.session_state.vid_subject}
+Shot type: {st.session_state.vid_shot_type}
+Camera movement: {st.session_state.vid_camera_move}
+Duration: {st.session_state.vid_duration}
+Visual style: {st.session_state.vid_style}
+Mood: {st.session_state.vid_mood}
+Lighting: {st.session_state.vid_lighting}
+Extra details: {st.session_state.vid_extra or 'none'}
+
+Output ONLY the final ready-to-use prompt. No explanation. No preamble."""
+
+            with st.spinner(f"Crafting your {st.session_state.vid_tool} prompt…"):
+                st.session_state.vid_generated = call_model(vtool["system"], user_msg)
+                st.session_state.vid_rating = ""
+                st.session_state.vid_step = 2
+            st.rerun()
+
+    elif st.session_state.vid_step == 2:
+        st.markdown(f"**✅ Your {st.session_state.vid_tool} prompt**")
+        st.text_area("", value=st.session_state.vid_generated, height=200)
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.download_button("📥 Download", data=st.session_state.vid_generated,
+                               file_name="video_prompt.txt", mime="text/plain")
+        with col2:
+            if st.button("⭐ Rate This Prompt"):
+                tool_name = st.session_state.vid_tool
+                with st.spinner("Rating…"):
+                    st.session_state.vid_rating = call_model(
+                        system=f"""You are an expert {tool_name} prompt engineer and video generation specialist.
+You give concise, specific, actionable feedback focused on what will actually improve the video output.
+You score honestly — a 10 is rare.""",
+                        user=f"""Rate this {tool_name} video prompt:
+
+{st.session_state.vid_generated}
+
+Original intent: {st.session_state.vid_subject}
+
+Provide exactly:
+1. Score: X/10
+2. Strengths (2-3 bullet points — be specific)
+3. Weaknesses (2-3 bullet points — be specific)
+4. Improved version: [rewrite the weakest part of the prompt]"""
+                    )
+                st.rerun()
+        with col3:
+            if st.button("🔄 Start Again"):
+                st.session_state.vid_step = 1
+                st.session_state.vid_generated = ""
+                st.session_state.vid_rating = ""
+                st.rerun()
+
+        if st.session_state.vid_rating:
+            st.markdown('<div class="rating-box">', unsafe_allow_html=True)
+            st.markdown("**⭐ Prompt Rating**")
+            st.markdown(st.session_state.vid_rating)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SYSTEM PROMPT MODE
+# ══════════════════════════════════════════════════════════════════════════════
+elif mode == "⚙️ System Prompt":
+    st.markdown("#### ⚙️ System Prompt Builder")
+    st.caption("Build a complete system prompt to define how an AI assistant behaves.")
+
+    if st.session_state.sys_step == 1:
+        st.markdown("**Describe your AI assistant**")
+
+        st.session_state.sys_role = st.text_input(
+            "Role / persona:",
+            placeholder="e.g. Senior customer support agent for a B2B SaaS company"
+        )
+        st.session_state.sys_purpose = st.text_area(
+            "Primary task or purpose:",
+            placeholder="e.g. Answer customer questions about billing, account issues, and product features. Escalate complex technical issues to the engineering team."
+        )
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.session_state.sys_tone = st.selectbox("Tone and personality:", [
+                "Professional and concise",
+                "Friendly and warm",
+                "Formal and authoritative",
+                "Conversational and casual",
+                "Empathetic and supportive",
+                "Direct and no-nonsense",
+                "Enthusiastic and energetic",
+                "Calm and reassuring"
+            ])
+            st.session_state.sys_output_format = st.selectbox("Preferred output format:", [
+                "Clear prose paragraphs",
+                "Structured with headers",
+                "Numbered steps / instructions",
+                "Bullet points",
+                "Short and punchy — minimal words",
+                "Detailed and thorough",
+                "Markdown formatted",
+                "Plain text only"
+            ])
+        with col2:
+            st.session_state.sys_rules = st.text_area(
+                "Key rules and constraints:",
+                placeholder="e.g. Never discuss competitor products. Always ask for the customer's account ID before troubleshooting. Do not make promises about refund timelines.",
+                height=120
+            )
+            st.session_state.sys_example = st.text_area(
+                "Example of ideal output (optional):",
+                placeholder="Paste an example of exactly how you want the AI to respond — this is the single most powerful thing you can provide.",
+                height=120
+            )
+
+        if st.button("⚙️ Build System Prompt", type="primary") and st.session_state.sys_role.strip() and st.session_state.sys_purpose.strip():
+            user_msg = f"""Build a complete, production-ready system prompt for an AI assistant with these specifications:
+
+Role / persona: {st.session_state.sys_role}
+Primary task: {st.session_state.sys_purpose}
+Tone and personality: {st.session_state.sys_tone}
+Output format preference: {st.session_state.sys_output_format}
+Key rules and constraints: {st.session_state.sys_rules or 'none specified'}
+Example of ideal output: {st.session_state.sys_example or 'none provided'}
+
+Output ONLY the final system prompt, ready to paste directly into an AI tool. No explanation. No preamble. No "here is your system prompt:"."""
+
+            with st.spinner("Building your system prompt…"):
+                st.session_state.sys_generated = call_model(
+                    system="""You are a world-class prompt engineer specialising in system prompts for AI assistants.
+You know that the best system prompts:
+1. Open with a precise role definition including relevant expertise and context
+2. State the primary purpose and scope clearly — what the AI does AND does not do
+3. Define tone, personality, and communication style with concrete guidance
+4. List hard rules and constraints explicitly, in order of importance
+5. Specify output format with enough detail that there is no ambiguity
+6. Handle edge cases and failure modes upfront
+7. Are written directly to the AI ("You are...", "You must...", "When asked about X, always...")
+8. Are self-contained — the AI reading this needs zero additional context
+
+You write prompts that are tight, specific, and leave nothing to chance.
+You avoid vague instructions like "be helpful" and replace them with precise behavioural directives.""",
+                    user=user_msg
+                )
+                st.session_state.sys_step = 2
+            st.rerun()
+
+    elif st.session_state.sys_step == 2:
+        st.markdown("**✅ Your system prompt**")
+        st.text_area("", value=st.session_state.sys_generated, height=350)
+        st.caption("Tip: Ctrl+A then Ctrl+C to select and copy the full prompt.")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.download_button("📥 Download", data=st.session_state.sys_generated,
+                               file_name="system_prompt.txt", mime="text/plain")
+        with col2:
+            if st.button("🔄 Start Again"):
+                st.session_state.sys_step = 1
+                st.session_state.sys_generated = ""
+                st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # TEXT PROMPT MODE
 # ══════════════════════════════════════════════════════════════════════════════
-else:
+elif mode == "📝 Text Prompt":
     # ── Prompt history ────────────────────────────────────────────────────────
     if st.session_state.history:
         if st.button("📚 View Prompt History"):
