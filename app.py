@@ -94,15 +94,15 @@ You know that Midjourney responds best to:
 Structure every prompt as:
 [subject and action], [environment and setting], [lighting and atmosphere], [art style and medium], [colour palette], [technical details and quality], --[parameters]""",
     },
-    "DALL·E 3": {
+    "Image Gen 2 (Open AI)": {
         "description": "Rich natural language — narrative and descriptive",
         "supports_negative": False,
-        "system": """You are a DALL·E 3 expert. DALL·E 3 is trained on natural language and rewards:
+        "system": """You are an Image Gen 2 (OpenAI) expert. Image Gen 2 is trained on natural language and rewards:
 - Clear, vivid narrative descriptions written as complete, flowing sentences
 - Explicit specification of composition, perspective, and framing
 - Detailed lighting and atmosphere description
 - Style references (e.g. "in the style of a 1970s National Geographic photograph")
-- Specific mention of what should NOT dominate the image (DALL·E 3 doesn't use negative prompts, so weave exclusions into the description)
+- Specific mention of what should NOT dominate the image (weave exclusions into the description rather than using negative prompts)
 
 Write the prompt as 2-4 rich descriptive sentences. Be precise and leave nothing ambiguous.""",
     },
