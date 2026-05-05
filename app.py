@@ -22,20 +22,15 @@ CREDITS_PER_PAYMENT = 50
 def _secret(key: str, default: str = "") -> str:
     """Read from Streamlit secrets first, fall back to env vars (local dev)."""
     try:
-        return st.secrets[key]
+        val = st.secrets.get(key)
+        if val:
+            return val
     except Exception:
-        return os.getenv(key, default)
+        pass
+    return os.getenv(key, default)
 
-# Vercel KV (Upstash Redis) — used in production
-KV_URL   = _secret("KV_REST_API_URL")
-KV_TOKEN = _secret("KV_REST_API_TOKEN")
-KV_CONFIGURED = bool(KV_URL and KV_TOKEN)
-
-# Stripe Payment Link
-PAYMENT_LINK = _secret("PROMPTBUILDER_PAYMENT_LINK")
-
-# OpenAI client — reads OPENAI_API_KEY from secrets or env
-client = OpenAI(api_key=_secret("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY"))
+# OpenAI client
+client = OpenAI(api_key=_secret("OPENAI_API_KEY"))
 
 # Local fallback (dev only — not used in production)
 USAGE_FILE = "usage.json"
@@ -130,10 +125,14 @@ st.markdown(f"""
 
 def _kv(command: list):
     """Execute a single Redis command via Upstash REST API."""
+    url   = _secret("KV_REST_API_URL")
+    token = _secret("KV_REST_API_TOKEN")
+    if not url or not token:
+        return None
     try:
         resp = requests.post(
-            KV_URL,
-            headers={"Authorization": f"Bearer {KV_TOKEN}"},
+            url,
+            headers={"Authorization": f"Bearer {token}"},
             json=command,
             timeout=5
         )
@@ -196,17 +195,20 @@ def json_decrement_credits(email: str):
     _save_json(data)
 
 # ── Unified interface ─────────────────────────────────────────────────────────
+def _kv_available() -> bool:
+    return bool(_secret("KV_REST_API_URL") and _secret("KV_REST_API_TOKEN"))
+
 def get_usage(email: str) -> int:
-    return kv_get_usage(email) if KV_CONFIGURED else json_get_usage(email)
+    return kv_get_usage(email) if _kv_available() else json_get_usage(email)
 
 def get_credits(email: str) -> int:
-    return kv_get_credits(email) if KV_CONFIGURED else json_get_credits(email)
+    return kv_get_credits(email) if _kv_available() else json_get_credits(email)
 
 def do_increment_usage(email: str):
-    kv_increment_usage(email) if KV_CONFIGURED else json_increment_usage(email)
+    kv_increment_usage(email) if _kv_available() else json_increment_usage(email)
 
 def do_decrement_credits(email: str):
-    kv_decrement_credits(email) if KV_CONFIGURED else json_decrement_credits(email)
+    kv_decrement_credits(email) if _kv_available() else json_decrement_credits(email)
 
 
 # ─── Email gate ───────────────────────────────────────────────────────────────
@@ -266,7 +268,7 @@ st.markdown(f'<div class="{_usage_class}">{_usage_text}</div>', unsafe_allow_htm
 
 # ─── Upgrade banner (shown when limit is hit) ─────────────────────────────────
 if _at_limit:
-    upgrade_url = f"{PAYMENT_LINK}?prefilled_email={_email}" if PAYMENT_LINK else "#"
+    upgrade_url = f"{_secret('PROMPTBUILDER_PAYMENT_LINK')}?prefilled_email={_email}" if _secret('PROMPTBUILDER_PAYMENT_LINK') else "#"
     st.markdown(
         f'<div class="upgrade-box">'
         f"<strong>You've used all your free requests for this month.</strong><br>"
