@@ -280,6 +280,9 @@ if _at_limit:
         f"</div>",
         unsafe_allow_html=True
     )
+    st.markdown("&nbsp;")
+    if st.button("✅ I've already paid — check my credits"):
+        st.rerun()
     st.stop()
 
 
