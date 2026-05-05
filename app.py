@@ -266,6 +266,18 @@ else:
 
 st.markdown(f'<div class="{_usage_class}">{_usage_text}</div>', unsafe_allow_html=True)
 
+# ─── TEMPORARY DEBUG — remove after confirming KV works ──────────────────────
+with st.expander("🔧 Debug info"):
+    kv_url = _secret("KV_REST_API_URL")
+    kv_token = _secret("KV_REST_API_TOKEN")
+    st.write(f"KV URL found: `{'✅ ' + kv_url[:30] + '...' if kv_url else '❌ NOT SET'}`")
+    st.write(f"KV Token found: `{'✅ yes' if kv_token else '❌ NOT SET'}`")
+    st.write(f"KV available: `{_kv_available()}`")
+    ping = _kv(["PING"])
+    st.write(f"KV PING: `{ping}`")
+    st.write(f"Raw usage count from KV: `{_kv(['GET', _monthly_key(_email)])}`")
+# ─────────────────────────────────────────────────────────────────────────────
+
 # ─── Upgrade banner (shown when limit is hit) ─────────────────────────────────
 if _at_limit:
     upgrade_url = f"{_secret('PROMPTBUILDER_PAYMENT_LINK')}?prefilled_email={_email}" if _secret('PROMPTBUILDER_PAYMENT_LINK') else "#"
