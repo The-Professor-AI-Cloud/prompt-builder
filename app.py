@@ -16,8 +16,19 @@ client = OpenAI()
 # Internal model — do not expose to users
 _MODEL = "gpt-4.1"
 
-# Usage limit
+# Usage limits
 FREE_LIMIT = 10
+CREDITS_PER_PAYMENT = 50
+
+# Vercel KV (Upstash Redis) — used in production
+KV_URL   = os.getenv("KV_REST_API_URL", "")
+KV_TOKEN = os.getenv("KV_REST_API_TOKEN", "")
+KV_CONFIGURED = bool(KV_URL and KV_TOKEN)
+
+# Stripe Payment Link — set this env var once you've created the link in Stripe dashboard
+PAYMENT_LINK = os.getenv("PROMPTBUILDER_PAYMENT_LINK", "")
+
+# Local fallback (dev only — not used in production)
 USAGE_FILE = "usage.json"
 
 # Page config
@@ -85,6 +96,14 @@ st.markdown(f"""
         border-color: #f9a825;
         color: #7a5c00;
     }}
+    .upgrade-box {{
+        background-color: #fff3cd;
+        border: 1px solid #ffc107;
+        border-radius: 6px;
+        padding: 1rem 1.25rem;
+        margin-bottom: 1rem;
+        text-align: center;
+    }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -96,29 +115,89 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 
-# ─── Usage tracking ───────────────────────────────────────────────────────────
-def load_usage():
+# ══════════════════════════════════════════════════════════════════════════════
+# USAGE TRACKING — Vercel KV in production, JSON file for local dev
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _kv(command: list):
+    """Execute a single Redis command via Upstash REST API."""
+    try:
+        resp = requests.post(
+            KV_URL,
+            headers={"Authorization": f"Bearer {KV_TOKEN}"},
+            json=command,
+            timeout=5
+        )
+        return resp.json().get("result")
+    except Exception:
+        return None
+
+def _monthly_key(email: str) -> str:
+    month = datetime.now().strftime("%Y-%m")
+    return f"promptbuilder:usage:{email.lower().strip()}:{month}"
+
+def _credits_key(email: str) -> str:
+    return f"promptbuilder:credits:{email.lower().strip()}"
+
+# ── KV versions ───────────────────────────────────────────────────────────────
+def kv_get_usage(email: str) -> int:
+    val = _kv(["GET", _monthly_key(email)])
+    return int(val) if val else 0
+
+def kv_get_credits(email: str) -> int:
+    val = _kv(["GET", _credits_key(email)])
+    return max(int(val), 0) if val else 0
+
+def kv_increment_usage(email: str):
+    _kv(["INCR", _monthly_key(email)])
+    _kv(["EXPIRE", _monthly_key(email), 5184000])  # 60-day TTL
+
+def kv_decrement_credits(email: str):
+    _kv(["DECRBY", _credits_key(email), 1])
+
+# ── JSON fallback (local dev only) ────────────────────────────────────────────
+def _load_json():
     if os.path.isfile(USAGE_FILE):
         with open(USAGE_FILE, "r") as f:
             return json.load(f)
     return {}
 
-def save_usage(data):
+def _save_json(data):
     with open(USAGE_FILE, "w") as f:
         json.dump(data, f)
 
-def _usage_key(email):
+def json_get_usage(email: str) -> int:
     month = datetime.now().strftime("%Y-%m")
-    return f"{email.lower().strip()}::{month}"
+    return _load_json().get(f"{email.lower().strip()}::{month}", 0)
 
-def get_usage_count(email):
-    return load_usage().get(_usage_key(email), 0)
+def json_get_credits(email: str) -> int:
+    return _load_json().get(f"{email.lower().strip()}::credits", 0)
 
-def increment_usage(email):
-    data = load_usage()
-    key = _usage_key(email)
+def json_increment_usage(email: str):
+    data = _load_json()
+    month = datetime.now().strftime("%Y-%m")
+    key = f"{email.lower().strip()}::{month}"
     data[key] = data.get(key, 0) + 1
-    save_usage(data)
+    _save_json(data)
+
+def json_decrement_credits(email: str):
+    data = _load_json()
+    key = f"{email.lower().strip()}::credits"
+    data[key] = max(data.get(key, 0) - 1, 0)
+    _save_json(data)
+
+# ── Unified interface ─────────────────────────────────────────────────────────
+def get_usage(email: str) -> int:
+    return kv_get_usage(email) if KV_CONFIGURED else json_get_usage(email)
+
+def get_credits(email: str) -> int:
+    return kv_get_credits(email) if KV_CONFIGURED else json_get_credits(email)
+
+def do_increment_usage(email: str):
+    kv_increment_usage(email) if KV_CONFIGURED else json_increment_usage(email)
+
+def do_decrement_credits(email: str):
+    kv_decrement_credits(email) if KV_CONFIGURED else json_decrement_credits(email)
 
 
 # ─── Email gate ───────────────────────────────────────────────────────────────
@@ -142,25 +221,54 @@ if not st.session_state.user_email:
                 st.warning("Please enter a valid email address.")
     st.stop()
 
-# ─── Usage display ────────────────────────────────────────────────────────────
-_count = get_usage_count(st.session_state.user_email)
-_remaining = max(0, FREE_LIMIT - _count)
-_warn = _remaining <= 3
-_usage_class = "usage-bar warning" if _warn else "usage-bar"
-_usage_icon = "⚠️" if _warn else "🔢"
-st.markdown(
-    f'<div class="{_usage_class}">{_usage_icon} '
-    f'<strong>{_remaining}</strong> of {FREE_LIMIT} free requests remaining this month '
-    f'&nbsp;·&nbsp; <small>{st.session_state.user_email}</small> '
-    f'<a href="?reset_email=1" style="float:right;font-size:11px;color:#aaa;">change email</a></div>',
-    unsafe_allow_html=True
-)
-
 # Allow email reset via query param
 if st.query_params.get("reset_email") == "1":
     st.session_state.user_email = ""
     st.query_params.clear()
     st.rerun()
+
+# ─── Usage display ────────────────────────────────────────────────────────────
+_email       = st.session_state.user_email
+_usage       = get_usage(_email)
+_credits     = get_credits(_email)
+_free_left   = max(0, FREE_LIMIT - _usage)
+_has_credits = _credits > 0
+_at_limit    = _free_left == 0 and not _has_credits
+_warn        = _free_left <= 3 and not _has_credits
+
+_usage_class = "usage-bar warning" if _warn else "usage-bar"
+_usage_icon  = "⚠️" if _warn else "🔢"
+
+if _has_credits:
+    _usage_text = (
+        f"{_usage_icon} <strong>{_free_left}</strong> free requests left this month "
+        f"· <strong>{_credits}</strong> paid credits "
+        f"&nbsp;·&nbsp; <small>{_email}</small> "
+        f'<a href="?reset_email=1" style="float:right;font-size:11px;color:#aaa;">change email</a>'
+    )
+else:
+    _usage_text = (
+        f"{_usage_icon} <strong>{_free_left}</strong> of {FREE_LIMIT} free requests remaining this month "
+        f"&nbsp;·&nbsp; <small>{_email}</small> "
+        f'<a href="?reset_email=1" style="float:right;font-size:11px;color:#aaa;">change email</a>'
+    )
+
+st.markdown(f'<div class="{_usage_class}">{_usage_text}</div>', unsafe_allow_html=True)
+
+# ─── Upgrade banner (shown when limit is hit) ─────────────────────────────────
+if _at_limit:
+    upgrade_url = f"{PAYMENT_LINK}?prefilled_email={_email}" if PAYMENT_LINK else "#"
+    st.markdown(
+        f'<div class="upgrade-box">'
+        f"<strong>You've used all your free requests for this month.</strong><br>"
+        f"Get <strong>{CREDITS_PER_PAYMENT} more requests</strong> to keep going.<br><br>"
+        f'<a href="{upgrade_url}" target="_blank" style="background:#4361ee;color:white;'
+        f'padding:0.5rem 1.5rem;border-radius:4px;text-decoration:none;font-weight:600;">'
+        f"Get more requests →</a>"
+        f"</div>",
+        unsafe_allow_html=True
+    )
+    st.stop()
 
 
 # ─── Image tool definitions ───────────────────────────────────────────────────
@@ -307,25 +415,35 @@ for k, v in defaults.items():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# HELPER — call model (with usage tracking)
+# HELPER — call model (with usage + credits tracking)
 # ══════════════════════════════════════════════════════════════════════════════
 def call_model(system: str, user: str) -> str:
-    email = st.session_state.user_email
-    current = get_usage_count(email)
-    if current >= FREE_LIMIT:
+    email   = st.session_state.user_email
+    usage   = get_usage(email)
+    credits = get_credits(email)
+
+    if usage >= FREE_LIMIT and credits <= 0:
+        upgrade_url = f"{PAYMENT_LINK}?prefilled_email={email}" if PAYMENT_LINK else "#"
         st.error(
-            f"You've used all {FREE_LIMIT} free requests for this month. "
-            "Check back next month, or get in touch if you'd like early access to a paid plan."
+            f"You've used all your free requests for this month. "
+            f"[Get {CREDITS_PER_PAYMENT} more requests]({upgrade_url})"
         )
         st.stop()
+
     response = client.chat.completions.create(
         model=_MODEL,
         messages=[
             {"role": "system", "content": system},
-            {"role": "user", "content": user},
+            {"role": "user",   "content": user},
         ]
     )
-    increment_usage(email)
+
+    # Charge free tier first, then paid credits
+    if usage < FREE_LIMIT:
+        do_increment_usage(email)
+    else:
+        do_decrement_credits(email)
+
     return response.choices[0].message.content.strip()
 
 
@@ -599,29 +717,21 @@ elif mode == "⚙️ System Prompt":
         col1, col2 = st.columns(2)
         with col1:
             st.session_state.sys_tone = st.selectbox("Tone and personality:", [
-                "Professional and concise",
-                "Friendly and warm",
-                "Formal and authoritative",
-                "Conversational and casual",
-                "Empathetic and supportive",
-                "Direct and no-nonsense",
-                "Enthusiastic and energetic",
-                "Calm and reassuring"
+                "Professional and concise", "Friendly and warm",
+                "Formal and authoritative", "Conversational and casual",
+                "Empathetic and supportive", "Direct and no-nonsense",
+                "Enthusiastic and energetic", "Calm and reassuring"
             ])
             st.session_state.sys_output_format = st.selectbox("Preferred output format:", [
-                "Clear prose paragraphs",
-                "Structured with headers",
-                "Numbered steps / instructions",
-                "Bullet points",
-                "Short and punchy — minimal words",
-                "Detailed and thorough",
-                "Markdown formatted",
-                "Plain text only"
+                "Clear prose paragraphs", "Structured with headers",
+                "Numbered steps / instructions", "Bullet points",
+                "Short and punchy — minimal words", "Detailed and thorough",
+                "Markdown formatted", "Plain text only"
             ])
         with col2:
             st.session_state.sys_rules = st.text_area(
                 "Key rules and constraints:",
-                placeholder="e.g. Never discuss competitor products. Always ask for the customer's account ID before troubleshooting. Do not make promises about refund timelines.",
+                placeholder="e.g. Never discuss competitor products. Always ask for the customer's account ID before troubleshooting.",
                 height=120
             )
             st.session_state.sys_example = st.text_area(
@@ -640,7 +750,7 @@ Output format preference: {st.session_state.sys_output_format}
 Key rules and constraints: {st.session_state.sys_rules or 'none specified'}
 Example of ideal output: {st.session_state.sys_example or 'none provided'}
 
-Output ONLY the final system prompt, ready to paste directly into an AI tool. No explanation. No preamble. No "here is your system prompt:"."""
+Output ONLY the final system prompt, ready to paste directly into an AI tool. No explanation. No preamble."""
 
             with st.spinner("Building your system prompt…"):
                 st.session_state.sys_generated = call_model(
@@ -682,7 +792,6 @@ You avoid vague instructions like "be helpful" and replace them with precise beh
 # TEXT PROMPT MODE
 # ══════════════════════════════════════════════════════════════════════════════
 elif mode == "📝 Text Prompt":
-    # ── Prompt history ────────────────────────────────────────────────────────
     if st.session_state.history:
         if st.button("📚 View Prompt History"):
             st.session_state.show_history = not st.session_state.show_history
@@ -713,7 +822,6 @@ elif mode == "📝 Text Prompt":
                 st.download_button("📥 Download PDF", data=buffer,
                                    file_name="prompts.pdf", mime="application/pdf")
 
-    # ── Step 1 ────────────────────────────────────────────────────────────────
     if st.session_state.step == 1:
         st.markdown("### Step 1: What do you want to achieve?")
         st.session_state.goal = st.text_area(
@@ -752,7 +860,6 @@ Return only the questions, one per line, no numbering, no preamble."""
                     st.session_state.step = 2
             st.rerun()
 
-    # ── Step 2 ────────────────────────────────────────────────────────────────
     elif st.session_state.step == 2:
         st.markdown("### Step 2: A few quick details")
         st.caption("These help build a much stronger prompt. Skip anything that doesn't apply.")
@@ -773,7 +880,6 @@ Return only the questions, one per line, no numbering, no preamble."""
                 st.session_state.step = 3
                 st.rerun()
 
-    # ── Step 3 ────────────────────────────────────────────────────────────────
     elif st.session_state.step == 3:
         st.markdown("### Step 3: Your prompt")
 
@@ -868,8 +974,8 @@ if st.button("💬 Send Feedback"):
 if st.session_state.get("show_feedback", False):
     st.markdown("### 💬 Feedback")
     with st.form("feedback_form"):
-        name = st.text_input("Your name (optional)")
-        email = st.text_input("Your email (optional)")
+        name    = st.text_input("Your name (optional)")
+        email   = st.text_input("Your email (optional)")
         message = st.text_area("Your message")
         if st.form_submit_button("Send Feedback"):
             if not message.strip():
