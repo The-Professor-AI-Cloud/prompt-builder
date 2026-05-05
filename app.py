@@ -282,8 +282,7 @@ if _at_limit:
     )
     st.markdown("&nbsp;")
     if st.button("✅ I've already paid — check my credits"):
-        raw = _kv(["GET", _credits_key(_email)])
-        st.info(f"Credits in KV for `{_email}`: `{raw}`")
+        st.rerun()
     st.stop()
 
 
@@ -433,13 +432,13 @@ for k, v in defaults.items():
 # ══════════════════════════════════════════════════════════════════════════════
 # HELPER — call model (with usage + credits tracking)
 # ══════════════════════════════════════════════════════════════════════════════
-def call_model(system: str, user: str) -> str:
+def call_model(system: str, user: str, track_usage: bool = True) -> str:
     email   = st.session_state.user_email
     usage   = get_usage(email)
     credits = get_credits(email)
 
-    if usage >= FREE_LIMIT and credits <= 0:
-        upgrade_url = f"{PAYMENT_LINK}?prefilled_email={email}" if PAYMENT_LINK else "#"
+    if track_usage and usage >= FREE_LIMIT and credits <= 0:
+        upgrade_url = f"{_secret('PROMPTBUILDER_PAYMENT_LINK')}?prefilled_email={email}" if _secret('PROMPTBUILDER_PAYMENT_LINK') else "#"
         st.error(
             f"You've used all your free requests for this month. "
             f"[Get {CREDITS_PER_PAYMENT} more requests]({upgrade_url})"
@@ -454,11 +453,12 @@ def call_model(system: str, user: str) -> str:
         ]
     )
 
-    # Charge free tier first, then paid credits
-    if usage < FREE_LIMIT:
-        do_increment_usage(email)
-    else:
-        do_decrement_credits(email)
+    if track_usage:
+        # Charge free tier first, then paid credits
+        if usage < FREE_LIMIT:
+            do_increment_usage(email)
+        else:
+            do_decrement_credits(email)
 
     return response.choices[0].message.content.strip()
 
@@ -866,7 +866,8 @@ Focus on specifics that a reasoning model would need to avoid ambiguity or makin
 
 If the goal is already fully specified and unambiguous, return exactly: NONE
 
-Return only the questions, one per line, no numbering, no preamble."""
+Return only the questions, one per line, no numbering, no preamble.""",
+                    track_usage=False
                 )
                 content = questions_raw.strip()
                 if content.upper() == "NONE":
