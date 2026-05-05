@@ -266,24 +266,6 @@ else:
 
 st.markdown(f'<div class="{_usage_class}">{_usage_text}</div>', unsafe_allow_html=True)
 
-# ─── TEMPORARY DEBUG — remove after confirming KV works ──────────────────────
-with st.expander("🔧 Debug info"):
-    kv_url   = _secret("KV_REST_API_URL")
-    kv_token = _secret("KV_REST_API_TOKEN")
-    st.write(f"KV URL: `{kv_url[:40] if kv_url else 'NOT SET'}`")
-    st.write(f"KV Token: `{'set (' + str(len(kv_token)) + ' chars)' if kv_token else 'NOT SET'}`")
-    try:
-        resp = requests.post(
-            kv_url,
-            headers={"Authorization": f"Bearer {kv_token}"},
-            json=["PING"],
-            timeout=5
-        )
-        st.write(f"HTTP status: `{resp.status_code}`")
-        st.write(f"Raw response: `{resp.text[:300]}`")
-    except Exception as e:
-        st.write(f"Exception: `{e}`")
-# ─────────────────────────────────────────────────────────────────────────────
 
 # ─── Upgrade banner (shown when limit is hit) ─────────────────────────────────
 if _at_limit:
