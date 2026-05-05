@@ -282,7 +282,8 @@ if _at_limit:
     )
     st.markdown("&nbsp;")
     if st.button("✅ I've already paid — check my credits"):
-        st.rerun()
+        raw = _kv(["GET", _credits_key(_email)])
+        st.info(f"Credits in KV for `{_email}`: `{raw}`")
     st.stop()
 
 
