@@ -11,7 +11,6 @@ import requests
 
 # Load environment variables
 load_dotenv()
-client = OpenAI()
 
 # Internal model — do not expose to users
 _MODEL = "gpt-4.1"
@@ -20,13 +19,23 @@ _MODEL = "gpt-4.1"
 FREE_LIMIT = 10
 CREDITS_PER_PAYMENT = 50
 
+def _secret(key: str, default: str = "") -> str:
+    """Read from Streamlit secrets first, fall back to env vars (local dev)."""
+    try:
+        return st.secrets[key]
+    except Exception:
+        return os.getenv(key, default)
+
 # Vercel KV (Upstash Redis) — used in production
-KV_URL   = os.getenv("KV_REST_API_URL", "")
-KV_TOKEN = os.getenv("KV_REST_API_TOKEN", "")
+KV_URL   = _secret("KV_REST_API_URL")
+KV_TOKEN = _secret("KV_REST_API_TOKEN")
 KV_CONFIGURED = bool(KV_URL and KV_TOKEN)
 
-# Stripe Payment Link — set this env var once you've created the link in Stripe dashboard
-PAYMENT_LINK = os.getenv("PROMPTBUILDER_PAYMENT_LINK", "")
+# Stripe Payment Link
+PAYMENT_LINK = _secret("PROMPTBUILDER_PAYMENT_LINK")
+
+# OpenAI client — reads OPENAI_API_KEY from secrets or env
+client = OpenAI(api_key=_secret("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY"))
 
 # Local fallback (dev only — not used in production)
 USAGE_FILE = "usage.json"
