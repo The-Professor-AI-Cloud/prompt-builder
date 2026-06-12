@@ -18,6 +18,7 @@ _MODEL = "gpt-4.1"
 # Usage limits
 FREE_LIMIT = 10
 CREDITS_PER_PAYMENT = 50
+CREDIT_PRICE = "£5"  # price per top-up — keep in sync with the Stripe Payment Link
 
 def _secret(key: str, default: str = "") -> str:
     """Read from Streamlit secrets first, fall back to env vars (local dev)."""
@@ -273,7 +274,7 @@ if _at_limit:
     st.markdown(
         f'<div class="upgrade-box">'
         f"<strong>You've used all your free requests for this month.</strong><br>"
-        f"Get <strong>{CREDITS_PER_PAYMENT} more requests</strong> to keep going.<br><br>"
+        f"Get <strong>{CREDITS_PER_PAYMENT} more requests for {CREDIT_PRICE}</strong> to keep going.<br><br>"
         f'<a href="{upgrade_url}" target="_blank" style="background:#4361ee;color:white;'
         f'padding:0.5rem 1.5rem;border-radius:4px;text-decoration:none;font-weight:600;">'
         f"Get more requests →</a>"
@@ -442,7 +443,7 @@ def call_model(system: str, user: str, track_usage: bool = True) -> str:
         upgrade_url = f"{_secret('PROMPTBUILDER_PAYMENT_LINK')}?prefilled_email={email}" if _secret('PROMPTBUILDER_PAYMENT_LINK') else "#"
         st.error(
             f"You've used all your free requests for this month. "
-            f"[Get {CREDITS_PER_PAYMENT} more requests]({upgrade_url})"
+            f"[Get {CREDITS_PER_PAYMENT} more requests for {CREDIT_PRICE}]({upgrade_url})"
         )
         st.stop()
 
