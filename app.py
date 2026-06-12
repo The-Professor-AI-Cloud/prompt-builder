@@ -358,17 +358,18 @@ Write the most vivid, original, cinematically compelling prompt possible. Surpri
 
 # ─── Video tool definitions ───────────────────────────────────────────────────
 VIDEO_TOOLS = {
-    "Sora (OpenAI)": {
-        "description": "Cinematic prose — describe the scene and how it unfolds over time",
-        "system": """You are a Sora expert prompt writer. Sora generates video from natural language and rewards:
+    "Gemini Omni": {
+        "description": "Cinematic prose with native audio — describe the scene, motion and sound as it unfolds",
+        "system": """You are a Google Gemini Omni video prompt expert. Gemini Omni generates high-fidelity clips with natively synchronised audio from natural language, and rewards:
 - Cinematic prose written as flowing, descriptive sentences (not bullet points)
 - Temporal progression: describe what changes or happens over the duration, not just a static scene
 - Camera language woven naturally into the description: "the camera slowly drifts back to reveal...", "a tight close-up shows..."
 - Specific motion details: how subjects move, how light changes, how the environment shifts
+- Audio cues described in the prose: ambient sound, dialogue, music or sound effects that play during the shot (Gemini generates sound natively)
 - Atmosphere and mood set through sensory language
 - Aim for 3–6 sentences that tell a complete visual story with a beginning, middle, and end
 
-Do NOT use technical parameter syntax. Write as if directing a short film.""",
+Do NOT use technical parameter syntax. Write as if directing a short film, and call out the soundscape where it adds to the scene.""",
     },
     "Runway Gen-3": {
         "description": "Structured directives — camera type, action, environment, mood",
@@ -414,7 +415,7 @@ defaults = {
     "img_extra": "", "img_negative": "",
     "img_generated": "", "img_rating": "",
     # Video prompt
-    "vid_step": 1, "vid_tool": "Sora (OpenAI)",
+    "vid_step": 1, "vid_tool": "Gemini Omni",
     "vid_subject": "", "vid_shot_type": "", "vid_camera_move": "",
     "vid_duration": "10 seconds", "vid_style": "", "vid_mood": "",
     "vid_lighting": "", "vid_extra": "",
